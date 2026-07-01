@@ -1,0 +1,43 @@
+# IDE and editor settings
+.idea/
+.vscode/
+.fleet/
+.zed/
+.nova/
+
+# Eclipse / STS
+.project
+.classpath
+.settings/
+.metadata/
+
+# NetBeans
+nbproject/private/
+nbproject/build/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim / Neovim
+*.swp
+*.swo
+*.swn
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+
+# OS generated files
+.DS_Store
+Thumbs.db

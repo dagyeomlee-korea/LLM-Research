@@ -9,7 +9,7 @@ AIS팀 내에서 사용 중인 도구와 기술 스택 현황을 소개합니다
 #### Wiki
 
 - Microsoft Teams: Teams Channel 내 Shared Files
-- github share-document repo: 
+- github share-document repo: https://github.com/coontec-ai-labs/share-document
 
 제품 기획은 팀 내에서만 공유되는 비공개 문서입니다. 이외의 폴더는 공개 문서입니다.
 
