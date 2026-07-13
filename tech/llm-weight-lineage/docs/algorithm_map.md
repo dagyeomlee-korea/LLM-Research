@@ -338,6 +338,23 @@ The validated results show that full-model aggregation can dilute targeted
 language changes. Q/K detects the CloudGoat-style update, but O/down must also
 be included to detect the Huihui-style projection-only modification. Use SHA-256
 deduplication before pairwise computation.
+
+## 13. Validated CKA and Delta-SVD Stage
+
+The CloudGoat comparison validates deterministic sampled linear CKA as a
+geometry-preservation signal. CKA distance correlates strongly with symmetric
+weight L2 across its changed tensors, while kurtosis delta remains largely
+independent and should stay as a separate evidence channel.
+
+The Huihui 0.8B/2B comparison exposes a stronger transformation fingerprint:
+
+- only attention-output and MLP-down projections change;
+- all 100 changed tensors have more than 90% delta energy in rank 1;
+- top-1 energy is above 99.46% for every changed tensor;
+- the update is nearly orthogonal to the corresponding Base-to-Instruct delta.
+
+Use weight distance for graph edge cost, kurtosis for distribution evidence,
+CKA for geometry-preservation type, and delta-SVD for transformation type.
 - Do not use embedding/lm_head differences without accounting for tokenizer or vocab changes.
 - Do not treat metadata similarity as weight-level evidence.
 - Do not treat one matrix family as sufficient proof when other matrix families contradict it.
