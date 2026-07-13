@@ -17,6 +17,16 @@ stores the result in PostgreSQL.
 python -m filecollector.analysis.weight_stats --repo-id xxx --path /models/xxx/model-00001-of-00004.safetensors
 ```
 
+For large batches, explicitly select the NumPy engine:
+
+```bash
+python -m filecollector.analysis.weight_stats \
+  --repo-id xxx \
+  --path /models/xxx/model.safetensors \
+  --engine numpy \
+  --dry-run
+```
+
 ## Tensor Categories
 
 Tensor names are classified into these categories:
@@ -55,6 +65,30 @@ For each tensor:
 Moment statistics are computed in streaming fashion. Absolute quantiles are
 estimated with a bounded histogram after discovering `max_abs`; this avoids
 keeping all tensor values in memory. The default histogram size is 8192 bins.
+
+## Processing Engines
+
+- `python`: original scalar streaming implementation with no external tensor dependency.
+- `numpy`: vectorized chunk implementation for production-size BF16/F16/F32/F64 files.
+- `auto`: uses NumPy when installed and otherwise falls back to the Python engine.
+
+Both engines preserve the same raw-moment and histogram definitions. BF16 NumPy
+processing expands uint16 values to FP32 bit patterns and accumulates statistics
+in float64. The NumPy path remains chunk-bounded and does not load the entire
+model into RAM.
+
+## Resumable Batch CLI
+
+```bash
+python -m filecollector.analysis.weight_stats_batch \
+  --manifest /path/to/manifest.json \
+  --output-dir /path/to/results \
+  --engine numpy
+```
+
+The runner writes `.jsonl.part` during analysis, promotes it to `.jsonl` only
+after row-count validation, stores one `.done.json` marker per model, and skips
+validated models after restart.
 
 ## Table Definition
 

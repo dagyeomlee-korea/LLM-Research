@@ -53,3 +53,12 @@
 - 모든 행이 JSON으로 파싱되고 `repo_id`, `tensor_name`, `module_type`, `kurtosis` 필드를 가진다.
 - 오류 metadata가 있는 행 수를 별도로 보고한다.
 - 원본 safetensors는 변경하지 않는다.
+
+## 실행 결과 (2026-07-13)
+
+- 10개 모델, 5,600/5,600 tensor row가 성공했다.
+- error metadata row는 0개다.
+- NumPy 순차 배치 wall time은 12분 8초, exit code는 0이다.
+- SHA-256 및 anchor 비교 summary는 NAS의 `~/qwen35-first10-results/analysis-summary.json`에 생성했다.
+- 공식 Instruct와 byte-identical한 후보는 unsloth 0.8B, unsloth 2B, hamishivi 2B다.
+- CloudGoat는 96개 attention/MLP fingerprint, Huihui 0.8B/2B는 각각 동일 구조의 50개 attention-output/MLP-down fingerprint가 공식 Instruct와 다르다.
