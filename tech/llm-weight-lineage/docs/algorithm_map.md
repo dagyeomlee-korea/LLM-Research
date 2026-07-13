@@ -318,6 +318,26 @@ pipeline is validated.
 
 - Do not infer parent-child direction from model card claims alone.
 - Do not compare models with incompatible hidden size as if they were directly aligned.
+
+## 12. Validated Weight Distance Stage
+
+The first Qwen3.5 0.8B/2B batch validated these pairwise metrics:
+
+- parameter-weighted global symmetric Frobenius/L2 distance;
+- global cosine distance;
+- tensor-balanced median and p95 distance;
+- module-level distance;
+- tensor-aligned kurtosis median and p95 distance.
+
+Maintain two separate views:
+
+- `all`: vision, embedding, MTP, language, and other compatible tensors;
+- `language_core`: language-layer attention Q/K/V/O, MLP gate/up/down, and norm.
+
+The validated results show that full-model aggregation can dilute targeted
+language changes. Q/K detects the CloudGoat-style update, but O/down must also
+be included to detect the Huihui-style projection-only modification. Use SHA-256
+deduplication before pairwise computation.
 - Do not use embedding/lm_head differences without accounting for tokenizer or vocab changes.
 - Do not treat metadata similarity as weight-level evidence.
 - Do not treat one matrix family as sufficient proof when other matrix families contradict it.

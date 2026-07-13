@@ -70,3 +70,12 @@ global 값은 큰 tensor 영향이 크고 tensor median은 각 tensor를 동일 
 - cosine distance는 scale 변화에 둔감하므로 L2와 함께 사용한다.
 - kurtosis distance는 분포 형태 변화이며 실제 원소별 이동량을 대신하지 않는다.
 - 모델 공개 시점, 학습 claim, CKA/subspace 분석을 결합해야 최종 계보 판단이 가능하다.
+
+## 실행 결과 (2026-07-13)
+
+- 고유 모델 7개, family 내부 9 pair를 계산했다.
+- tensor-pair 4,824행, shape/dtype skip 0, 비유한 matrix 값 0이다.
+- full 실행은 7분 31초, exit code 0, 최대 RSS 약 3.44GiB, swap 0이었다.
+- 0.8B Instruct 기준 all/core symmetric L2는 Base 0.02004/0.04729, CloudGoat 0.01075/0.04215, Huihui 0.00301/0.01153이다.
+- 2B Instruct 기준 all/core symmetric L2는 Base 0.02178/0.05658, Huihui 0.00255/0.00936이다.
+- 결과는 NAS `~/qwen35-weight-distance-results`의 JSON/JSONL에 저장했다.
