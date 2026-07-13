@@ -13,6 +13,7 @@ from filecollector.analysis.kurtosis_delta import compare_kurtosis
 from filecollector.analysis.weight_stats_batch import _is_complete, _load_manifest
 from filecollector.analysis.weight_stats_summary import _compare_models, _percentile
 from filecollector.analysis.weight_distance import compute_pair
+from filecollector.analysis.advanced_fingerprint import delta_alignment, linear_cka, randomized_delta_svd
 from filecollector.analysis.weight_statistics_service import WeightStatisticsService
 from filecollector.schemas.weight_statistics import TensorStatistics
 
@@ -296,6 +297,61 @@ class WeightDistanceTest(unittest.TestCase):
         self.assertEqual(records[0]["l2"], 0.0)
         self.assertEqual(records[0]["symmetric_l2"], 0.0)
         self.assertEqual(records[0]["cosine_distance"], 0.0)
+
+
+class AdvancedFingerprintTest(unittest.TestCase):
+    def test_linear_cka_is_one_for_identical_and_scaled_matrix(self) -> None:
+        """
+        purpose: centered linear CKA가 동일 matrix와 상수 배율 matrix에서 1인지 검증한다.
+        input: 4x3 synthetic NumPy matrix와 3배 matrix.
+        processing: 동일/scale pair의 CKA를 계산해 1과 비교한다.
+        return/side effects: CKA가 다르면 unittest assertion이 실패하며 외부 상태는 변경하지 않는다.
+        """
+
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy is not installed")
+        matrix = np.array([[1, 2, 0], [0, 1, 3], [2, -1, 1], [4, 0, -2]], dtype=np.float32)
+        self.assertAlmostEqual(linear_cka(matrix, matrix)["cka"], 1.0, places=12)
+        self.assertAlmostEqual(linear_cka(matrix, matrix * 3.0)["cka"], 1.0, places=12)
+
+    def test_randomized_svd_detects_rank_one_delta(self) -> None:
+        """
+        purpose: randomized SVD가 synthetic rank-1 delta의 energy를 top-1에 집중시키는지 검증한다.
+        input: 두 vector outer product로 만든 8x6 rank-1 matrix.
+        processing: rank-3 randomized SVD를 수행해 top singular energy와 threshold rank를 확인한다.
+        return/side effects: low-rank 탐지 실패 시 unittest assertion이 실패하며 외부 상태는 변경하지 않는다.
+        """
+
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy is not installed")
+        left = np.arange(1, 9, dtype=np.float32)
+        right = np.arange(1, 7, dtype=np.float32)
+        result = randomized_delta_svd(np.outer(left, right), rank=3, oversample=2, seed=7)
+        repeated = randomized_delta_svd(np.outer(left, right), rank=3, oversample=2, seed=7)
+        self.assertEqual(result["singular_values"], repeated["singular_values"])
+        self.assertAlmostEqual(result["top_1_energy_fraction"], 1.0, places=6)
+        self.assertAlmostEqual(result["top_k_energy_fraction"], 1.0, places=6)
+        self.assertEqual(result["energy_rank_90"], 1)
+
+    def test_delta_alignment_detects_same_and_opposite_direction(self) -> None:
+        """
+        purpose: delta alignment가 같은 방향 +1, 반대 방향 -1을 반환하는지 검증한다.
+        input: synthetic 2x2 delta matrix와 양·음 배율 matrix.
+        processing: cosine alignment를 계산해 기대 방향과 비교한다.
+        return/side effects: 방향 계산이 다르면 unittest assertion이 실패하며 외부 상태는 변경하지 않는다.
+        """
+
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy is not installed")
+        delta = np.array([[1.0, -2.0], [3.0, 4.0]], dtype=np.float32)
+        self.assertAlmostEqual(delta_alignment(delta, delta * 2.0) or 0.0, 1.0)
+        self.assertAlmostEqual(delta_alignment(delta, delta * -1.0) or 0.0, -1.0)
 
 
 class KurtosisDeltaTest(unittest.TestCase):
