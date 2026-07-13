@@ -12,6 +12,7 @@ from filecollector.analysis.tensor_classifier import classify_tensor
 from filecollector.analysis.kurtosis_delta import compare_kurtosis
 from filecollector.analysis.weight_stats_batch import _is_complete, _load_manifest
 from filecollector.analysis.weight_stats_summary import _compare_models, _percentile
+from filecollector.analysis.weight_distance import compute_pair
 from filecollector.analysis.weight_statistics_service import WeightStatisticsService
 from filecollector.schemas.weight_statistics import TensorStatistics
 
@@ -233,6 +234,68 @@ class WeightStatisticsSummaryTest(unittest.TestCase):
         self.assertEqual(comparison["common_tensors"], 2)
         self.assertEqual(comparison["identical_fingerprint_tensors"], 1)
         self.assertAlmostEqual(comparison["absolute_kurtosis_delta"]["median"], 1.5)
+
+
+class WeightDistanceTest(unittest.TestCase):
+    def test_computes_expected_frobenius_and_cosine_distance(self) -> None:
+        """
+        purpose: synthetic tensor 쌍의 normalized Frobenius와 cosine distance를 수작업 값과 비교한다.
+        input: 값 `[1, 2]`와 `[1, 4]`를 가진 F32 safetensors 두 개.
+        processing: 실제 chunk pair 계산 후 norm/dot 공식의 기대값을 검증한다.
+        return/side effects: 계산이 다르면 unittest assertion이 실패하며 임시 파일만 생성한다.
+        """
+
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            self.skipTest("numpy is not installed")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            path_a = root / "a.safetensors"
+            path_b = root / "b.safetensors"
+            tensor_name = "model.language_model.layers.0.self_attn.q_proj.weight"
+            _write_safetensors(path_a, {tensor_name: ("F32", [2], [1.0, 2.0])})
+            _write_safetensors(path_b, {tensor_name: ("F32", [2], [1.0, 4.0])})
+            entry_a = {"repo_id": "a", "family": "test", "path": str(path_a)}
+            entry_b = {"repo_id": "b", "family": "test", "path": str(path_b)}
+            records, summary = compute_pair(
+                entry_a,
+                entry_b,
+                {tensor_name: 3.0},
+                {tensor_name: 5.0},
+                chunk_bytes=4,
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertAlmostEqual(records[0]["l2"], 2.0)
+        self.assertAlmostEqual(records[0]["symmetric_l2"], 2.0 / math.sqrt(22.0))
+        self.assertAlmostEqual(records[0]["cosine_distance"], 1.0 - 9.0 / math.sqrt(85.0))
+        self.assertEqual(records[0]["kurtosis_abs_delta"], 2.0)
+        self.assertEqual(summary["views"]["language_core"]["tensor_count"], 1)
+
+    def test_identical_bfloat16_tensor_has_zero_distance(self) -> None:
+        """
+        purpose: 같은 BF16 파일 self-comparison이 모든 핵심 거리에서 0인지 검증한다.
+        input: BF16 language MLP tensor 하나가 든 임시 safetensors.
+        processing: 동일 경로를 두 entry로 비교해 L2와 cosine distance를 확인한다.
+        return/side effects: 0이 아니면 unittest assertion이 실패하며 임시 파일만 생성한다.
+        """
+
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            self.skipTest("numpy is not installed")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "same.safetensors"
+            tensor_name = "model.language_model.layers.0.mlp.down_proj.weight"
+            _write_safetensors(path, {tensor_name: ("BF16", [3], [1.0, -0.5, 2.0])})
+            entry_a = {"repo_id": "a", "family": "test", "path": str(path)}
+            entry_b = {"repo_id": "b", "family": "test", "path": str(path)}
+            records, _ = compute_pair(entry_a, entry_b, {tensor_name: 4.0}, {tensor_name: 4.0})
+
+        self.assertEqual(records[0]["l2"], 0.0)
+        self.assertEqual(records[0]["symmetric_l2"], 0.0)
+        self.assertEqual(records[0]["cosine_distance"], 0.0)
 
 
 class KurtosisDeltaTest(unittest.TestCase):
