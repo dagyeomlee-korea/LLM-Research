@@ -10,6 +10,7 @@ from pathlib import Path
 from filecollector.analysis.tensor_classifier import classify_tensor_name
 from filecollector.analysis.tensor_classifier import classify_tensor
 from filecollector.analysis.kurtosis_delta import compare_kurtosis
+from filecollector.analysis.weight_stats_batch import _is_complete, _load_manifest
 from filecollector.analysis.weight_statistics_service import WeightStatisticsService
 from filecollector.schemas.weight_statistics import TensorStatistics
 
@@ -23,6 +24,10 @@ def _write_safetensors(path: Path, tensors: dict[str, tuple[str, list[int], list
             data.extend(struct.pack("<" + "f" * len(values), *values))
         elif dtype == "F64":
             data.extend(struct.pack("<" + "d" * len(values), *values))
+        elif dtype == "BF16":
+            for value in values:
+                fp32_bits = struct.unpack("<I", struct.pack("<f", value))[0]
+                data.extend(struct.pack("<H", fp32_bits >> 16))
         else:
             raise AssertionError(f"unsupported test dtype: {dtype}")
         offsets[name] = (start, len(data))
@@ -98,6 +103,98 @@ class WeightStatisticsServiceTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertIsNone(rows[0].mean)
         self.assertIn("Unsupported dtype", rows[0].metadata["error"])
+
+    def test_numpy_engine_matches_python_engine(self) -> None:
+        """
+        purpose: NumPy 벡터 엔진이 기존 Python 엔진과 같은 통계를 계산하는지 검증한다.
+        input: F32와 F64 텐서가 들어 있는 임시 safetensors 파일.
+        processing: 두 엔진의 결과를 각각 계산해 주요 통계와 분위수를 비교한다.
+        return/side effects: 불일치 시 unittest assertion이 실패하며 임시 파일 외 상태는 변경하지 않는다.
+        """
+
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            self.skipTest("numpy is not installed")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "model.safetensors"
+            _write_safetensors(
+                path,
+                {
+                    "model.layers.0.self_attn.q_proj.weight": (
+                        "F32",
+                        [2, 3],
+                        [1.0, -1.0, 0.0, 2.0, 3.0, -4.0],
+                    ),
+                    "model.layers.0.mlp.down_proj.weight": ("F64", [3], [0.5, 4.0, -2.0]),
+                    "model.layers.0.input_layernorm.weight": ("BF16", [3], [1.0, -0.5, 2.0]),
+                },
+            )
+            python_rows = list(
+                WeightStatisticsService(histogram_bins=16, chunk_bytes=8, engine="python").analyze_file(
+                    "test/repo", path
+                )
+            )
+            numpy_rows = list(
+                WeightStatisticsService(histogram_bins=16, chunk_bytes=8, engine="numpy").analyze_file(
+                    "test/repo", path
+                )
+            )
+
+        self.assertEqual(len(python_rows), len(numpy_rows))
+        for python_row, numpy_row in zip(python_rows, numpy_rows, strict=True):
+            self.assertEqual(python_row.tensor_name, numpy_row.tensor_name)
+            for field in (
+                "mean",
+                "std",
+                "skewness",
+                "kurtosis",
+                "excess_kurtosis",
+                "l2_norm",
+                "max_abs",
+                "q99_abs",
+                "q999_abs",
+                "sparsity",
+            ):
+                self.assertAlmostEqual(getattr(python_row, field), getattr(numpy_row, field), places=12)
+
+
+class WeightStatisticsBatchTest(unittest.TestCase):
+    def test_manifest_validation_and_completion_marker(self) -> None:
+        """
+        purpose: 배치 manifest 검증과 완료 marker 판정이 예상 행 수를 강제하는지 확인한다.
+        input: 임시 safetensors, manifest, JSONL, done marker 파일.
+        processing: manifest를 로드하고 성공 marker의 행 수 일치·불일치 결과를 비교한다.
+        return/side effects: 잘못된 완료 판정 시 unittest assertion이 실패하며 임시 디렉터리만 사용한다.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            tensor_path = root / "model.safetensors"
+            _write_safetensors(tensor_path, {"weight": ("F32", [1], [1.0])})
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "repo_id": "test/repo",
+                            "family": "test",
+                            "classification": "official_base",
+                            "path": str(tensor_path),
+                            "expected_tensors": 1,
+                            "output_name": "test-repo",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            entry = _load_manifest(manifest_path)[0]
+            (root / "test-repo.jsonl").write_text("{}\n", encoding="utf-8")
+            marker_path = root / "test-repo.done.json"
+            marker_path.write_text(json.dumps({"status": "success", "rows": 1}), encoding="utf-8")
+            self.assertTrue(_is_complete(entry, root))
+            marker_path.write_text(json.dumps({"status": "success", "rows": 0}), encoding="utf-8")
+            self.assertFalse(_is_complete(entry, root))
 
 
 class KurtosisDeltaTest(unittest.TestCase):

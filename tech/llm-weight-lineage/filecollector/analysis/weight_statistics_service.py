@@ -23,11 +23,19 @@ class WeightStatisticsService:
     return/side effects: `TensorStatistics` iterator를 반환하며 저장은 repository 계층에 위임한다.
     """
 
-    def __init__(self, histogram_bins: int = 8192, chunk_bytes: int = 8 * 1024 * 1024) -> None:
+    def __init__(
+        self,
+        histogram_bins: int = 8192,
+        chunk_bytes: int = 8 * 1024 * 1024,
+        engine: str = "auto",
+    ) -> None:
         if histogram_bins < 2:
             raise ValueError("histogram_bins must be >= 2")
+        if engine not in {"auto", "python", "numpy"}:
+            raise ValueError("engine must be one of: auto, python, numpy")
         self.histogram_bins = histogram_bins
         self.chunk_bytes = chunk_bytes
+        self.engine = engine
 
     def analyze_file(
         self,
@@ -87,7 +95,12 @@ class WeightStatisticsService:
         return/side effects: `TensorStatistics` 인스턴스를 반환하며 저장은 수행하지 않는다.
         """
 
-        first_pass = _collect_moments(st_file.iter_values(tensor))
+        use_numpy = self._use_numpy_engine()
+        first_pass = (
+            _collect_moments_numpy(st_file.iter_numpy_chunks(tensor))
+            if use_numpy
+            else _collect_moments(st_file.iter_values(tensor))
+        )
         if first_pass.count == 0:
             return TensorStatistics.empty(
                 repo_id=repo_id,
@@ -100,12 +113,20 @@ class WeightStatisticsService:
                 shape=tensor.shape,
             )
 
-        q99_abs, q999_abs = _estimate_abs_quantiles(
-            st_file.iter_values(tensor),
-            max_abs=first_pass.max_abs,
-            bins=self.histogram_bins,
-            quantiles=(0.99, 0.999),
-        )
+        if use_numpy:
+            q99_abs, q999_abs = _estimate_abs_quantiles_numpy(
+                st_file.iter_numpy_chunks(tensor),
+                max_abs=first_pass.max_abs,
+                bins=self.histogram_bins,
+                quantiles=(0.99, 0.999),
+            )
+        else:
+            q99_abs, q999_abs = _estimate_abs_quantiles(
+                st_file.iter_values(tensor),
+                max_abs=first_pass.max_abs,
+                bins=self.histogram_bins,
+                quantiles=(0.99, 0.999),
+            )
         mean, std, skewness, kurtosis, excess_kurtosis = first_pass.finalize()
         return TensorStatistics(
             repo_id=repo_id,
@@ -130,6 +151,24 @@ class WeightStatisticsService:
             metadata={"quantile_method": f"histogram:{self.histogram_bins}"},
             analyzed_at=datetime.now(timezone.utc),
         )
+
+    def _use_numpy_engine(self) -> bool:
+        """
+        purpose: 설정과 설치 상태를 기준으로 NumPy 엔진 사용 여부를 결정한다.
+        input: 생성자에서 받은 `engine` 값과 현재 Python 환경의 NumPy 설치 상태.
+        processing: `python`은 비활성화하고 `numpy`는 필수 import, `auto`는 선택적 import를 수행한다.
+        return/side effects: NumPy 사용 여부를 반환하며 `numpy` 강제 모드의 미설치 시 RuntimeError를 발생시킨다.
+        """
+
+        if self.engine == "python":
+            return False
+        try:
+            import numpy  # noqa: F401
+        except ImportError as exc:
+            if self.engine == "numpy":
+                raise RuntimeError("NumPy engine requires the numpy package") from exc
+            return False
+        return True
 
 
 class _MomentAccumulator:
@@ -209,6 +248,32 @@ def _collect_moments(values: Iterable[float]) -> _MomentAccumulator:
     return acc
 
 
+def _collect_moments_numpy(chunks: Iterable[object]) -> _MomentAccumulator:
+    """
+    purpose: NumPy 값 chunk에서 raw moment 누적값을 벡터 연산으로 계산한다.
+    input: float64 NumPy 배열 iterable.
+    processing: chunk별 count, 합, 제곱합, 3·4제곱합, max_abs, zero_count를 누적한다.
+    return/side effects: `_MomentAccumulator`를 반환하며 입력 배열과 외부 상태는 변경하지 않는다.
+    """
+
+    import numpy as np
+
+    acc = _MomentAccumulator()
+    for values in chunks:
+        array = np.asarray(values, dtype=np.float64)
+        if array.size == 0:
+            continue
+        squared = array * array
+        acc.count += int(array.size)
+        acc.zero_count += int(np.count_nonzero(array == 0.0))
+        acc.sum_x += float(np.sum(array, dtype=np.float64))
+        acc.sum_x2 += float(np.sum(squared, dtype=np.float64))
+        acc.sum_x3 += float(np.sum(squared * array, dtype=np.float64))
+        acc.sum_x4 += float(np.sum(squared * squared, dtype=np.float64))
+        acc.max_abs = max(acc.max_abs, float(np.max(np.abs(array))))
+    return acc
+
+
 def _estimate_abs_quantiles(
     values: Iterable[float],
     *,
@@ -234,6 +299,68 @@ def _estimate_abs_quantiles(
         total += 1
     if total == 0:
         return tuple(math.nan for _ in quantiles)
+    sorted_quantiles = sorted(enumerate(quantiles), key=lambda item: item[1])
+    output = [0.0] * len(quantiles)
+    cumulative = 0
+    cursor = 0
+    for idx, count in enumerate(counts):
+        cumulative += count
+        while cursor < len(sorted_quantiles):
+            original_index, quantile = sorted_quantiles[cursor]
+            target = max(1, math.ceil(total * quantile))
+            if cumulative < target:
+                break
+            output[original_index] = idx / scale
+            cursor += 1
+    return tuple(output)
+
+
+def _estimate_abs_quantiles_numpy(
+    chunks: Iterable[object],
+    *,
+    max_abs: float,
+    bins: int,
+    quantiles: tuple[float, ...],
+) -> tuple[float, ...]:
+    """
+    purpose: NumPy chunk로 기존 histogram 정의와 동일한 절대값 분위수를 계산한다.
+    input: float64 배열 iterable, max_abs, bin 수, quantile 목록.
+    processing: 기존 scalar 식과 같은 bin index를 벡터 계산하고 누적 histogram을 분위수로 변환한다.
+    return/side effects: quantile별 근사값 tuple을 반환하며 외부 상태는 변경하지 않는다.
+    """
+
+    import numpy as np
+
+    if max_abs <= 0.0:
+        return tuple(0.0 for _ in quantiles)
+    counts = np.zeros(bins, dtype=np.int64)
+    total = 0
+    scale = (bins - 1) / max_abs
+    for values in chunks:
+        array = np.asarray(values, dtype=np.float64)
+        indices = np.minimum((np.abs(array) * scale).astype(np.int64), bins - 1)
+        counts += np.bincount(indices, minlength=bins)
+        total += int(array.size)
+    return _quantiles_from_counts(counts.tolist(), total, max_abs, bins, quantiles)
+
+
+def _quantiles_from_counts(
+    counts: list[int],
+    total: int,
+    max_abs: float,
+    bins: int,
+    quantiles: tuple[float, ...],
+) -> tuple[float, ...]:
+    """
+    purpose: 누적 histogram count를 요청된 분위수 값으로 변환한다.
+    input: bin count, 전체 원소 수, max_abs, bin 수, quantile 목록.
+    processing: quantile 목표 rank를 처음 만족하는 기존 정의의 bin 상한을 찾는다.
+    return/side effects: quantile별 값 tuple을 반환하며 외부 상태는 변경하지 않는다.
+    """
+
+    if total == 0:
+        return tuple(math.nan for _ in quantiles)
+    scale = (bins - 1) / max_abs
     sorted_quantiles = sorted(enumerate(quantiles), key=lambda item: item[1])
     output = [0.0] * len(quantiles)
     cumulative = 0

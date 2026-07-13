@@ -6,7 +6,7 @@ import mmap
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 
 _DTYPE_BYTES = {
@@ -38,6 +38,21 @@ _STRUCT_FORMATS = {
     "F16": "e",
     "F32": "f",
     "F64": "d",
+}
+
+_NUMPY_DTYPES = {
+    "BOOL": "?",
+    "U8": "u1",
+    "I8": "i1",
+    "U16": "<u2",
+    "I16": "<i2",
+    "U32": "<u4",
+    "I32": "<i4",
+    "U64": "<u8",
+    "I64": "<i8",
+    "F16": "<f2",
+    "F32": "<f4",
+    "F64": "<f8",
 }
 
 
@@ -144,6 +159,35 @@ class SafeTensorFile:
             fmt = "<" + _STRUCT_FORMATS[dtype]
             for value in struct.iter_unpack(fmt, raw):
                 yield float(value[0])
+
+    def iter_numpy_chunks(self, tensor: TensorInfo) -> Iterator[Any]:
+        """
+        purpose: 지정 텐서 값을 제한된 크기의 NumPy float64 배열로 순회한다.
+        input: `TensorInfo`와 열린 mmap, 생성자에서 지정한 chunk byte 크기.
+        processing: dtype별 raw chunk를 NumPy로 해석하고 BF16은 FP32 bit pattern으로 확장한다.
+        return/side effects: 독립 float64 배열 iterator를 반환하며 원본 mmap과 파일은 읽기만 한다.
+        """
+
+        if self._mmap is None:
+            raise RuntimeError("SafeTensorFile must be opened before reading values")
+        try:
+            import numpy as np
+        except ImportError as exc:
+            raise RuntimeError("NumPy engine requires the numpy package") from exc
+
+        dtype = tensor.dtype.upper()
+        if dtype not in _DTYPE_BYTES:
+            raise ValueError(f"Unsupported dtype: {tensor.dtype}")
+        item_size = _DTYPE_BYTES[dtype]
+        chunk_size = max(item_size, self.chunk_bytes - (self.chunk_bytes % item_size))
+        for pos in range(tensor.start, tensor.end, chunk_size):
+            end = min(pos + chunk_size, tensor.end)
+            raw = self._mmap[pos:end]
+            if dtype == "BF16":
+                bits = np.frombuffer(raw, dtype="<u2").astype(np.uint32)
+                yield np.left_shift(bits, 16).view(np.float32).astype(np.float64)
+                continue
+            yield np.frombuffer(raw, dtype=_NUMPY_DTYPES[dtype]).astype(np.float64)
 
 
 def _iter_bfloat16(raw: bytes) -> Iterator[float]:

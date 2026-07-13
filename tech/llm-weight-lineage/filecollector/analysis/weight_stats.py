@@ -25,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", default=None, help="PostgreSQL DSN. Defaults to DATABASE_URL/POSTGRES_DSN.")
     parser.add_argument("--histogram-bins", type=int, default=8192, help="Bins for approximate abs quantiles")
     parser.add_argument("--chunk-bytes", type=int, default=8 * 1024 * 1024, help="Read chunk size per tensor")
+    parser.add_argument(
+        "--engine",
+        choices=("auto", "python", "numpy"),
+        default="auto",
+        help="Statistics engine; auto uses NumPy when installed",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print JSON Lines instead of saving to PostgreSQL")
     parser.add_argument("--no-create-table", action="store_true", help="Skip CREATE TABLE IF NOT EXISTS")
     return parser
@@ -42,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     service = WeightStatisticsService(
         histogram_bins=args.histogram_bins,
         chunk_bytes=args.chunk_bytes,
+        engine=args.engine,
     )
     rows = service.analyze_file(args.repo_id, args.path, revision=args.revision)
     if args.dry_run:
