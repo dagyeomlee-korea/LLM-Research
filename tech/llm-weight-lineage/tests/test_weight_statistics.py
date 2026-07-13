@@ -11,6 +11,7 @@ from filecollector.analysis.tensor_classifier import classify_tensor_name
 from filecollector.analysis.tensor_classifier import classify_tensor
 from filecollector.analysis.kurtosis_delta import compare_kurtosis
 from filecollector.analysis.weight_stats_batch import _is_complete, _load_manifest
+from filecollector.analysis.weight_stats_summary import _compare_models, _percentile
 from filecollector.analysis.weight_statistics_service import WeightStatisticsService
 from filecollector.schemas.weight_statistics import TensorStatistics
 
@@ -195,6 +196,43 @@ class WeightStatisticsBatchTest(unittest.TestCase):
             self.assertTrue(_is_complete(entry, root))
             marker_path.write_text(json.dumps({"status": "success", "rows": 0}), encoding="utf-8")
             self.assertFalse(_is_complete(entry, root))
+
+
+class WeightStatisticsSummaryTest(unittest.TestCase):
+    def test_percentile_and_anchor_comparison(self) -> None:
+        """
+        purpose: summary 분위수와 tensor별 anchor 첨도 차이 계산을 검증한다.
+        input: 두 개 tensor row로 구성된 비교 모델과 anchor fixture.
+        processing: p95와 absolute/signed delta, 동일 fingerprint 수를 계산한다.
+        return/side effects: 계산이 다르면 unittest assertion이 실패하며 외부 상태는 변경하지 않는다.
+        """
+
+        self.assertAlmostEqual(_percentile([0.0, 10.0], 0.95) or 0.0, 9.5)
+        anchor_rows = [
+            {
+                "tensor_name": "a",
+                "module_type": "attn_q",
+                "dtype": "F32",
+                "shape": [1],
+                "num_elements": 1,
+                "kurtosis": 4.0,
+            },
+            {
+                "tensor_name": "b",
+                "module_type": "attn_k",
+                "dtype": "F32",
+                "shape": [1],
+                "num_elements": 1,
+                "kurtosis": 2.0,
+            },
+        ]
+        model_rows = [dict(anchor_rows[0]), {**anchor_rows[1], "kurtosis": 5.0}]
+        entry = {"repo_id": "model", "family": "test"}
+        anchor = {"repo_id": "anchor", "family": "test"}
+        comparison = _compare_models(entry, model_rows, anchor, anchor_rows)
+        self.assertEqual(comparison["common_tensors"], 2)
+        self.assertEqual(comparison["identical_fingerprint_tensors"], 1)
+        self.assertAlmostEqual(comparison["absolute_kurtosis_delta"]["median"], 1.5)
 
 
 class KurtosisDeltaTest(unittest.TestCase):
